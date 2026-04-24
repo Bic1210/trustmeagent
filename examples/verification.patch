@@ -1,0 +1,12 @@
+diff --git a/trust_me/cli.py b/trust_me/cli.py
+--- a/trust_me/cli.py
++++ b/trust_me/cli.py
+@@ -1 +1 @@
+-old
++new
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -1 +1 @@
+-old_test
++new_test
