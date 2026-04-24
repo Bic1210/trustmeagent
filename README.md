@@ -1,4 +1,4 @@
-# trust me
+# trustmeagent
 
 Not another AI code reviewer.
 
