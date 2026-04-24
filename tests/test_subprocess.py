@@ -53,6 +53,20 @@ class RunCommandTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn("timed out", stderr)
 
+    def test_run_command_can_limit_captured_output_to_tail(self) -> None:
+        code, stdout, stderr = run_command(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('alpha'); print('beta'); print('warn-alpha', file=sys.stderr); print('warn-beta', file=sys.stderr)",
+            ],
+            max_output_chars=5,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout, "beta\n")
+        self.assertEqual(stderr, "beta\n")
+
     def test_run_command_rejects_empty_command(self) -> None:
         with self.assertRaises(ValueError):
             run_command([])

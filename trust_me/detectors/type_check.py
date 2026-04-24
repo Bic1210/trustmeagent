@@ -5,6 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from trust_me.utils.paths import iter_files
 from trust_me.utils.subprocess import run_command
 from trust_me.utils.tool_env import go_tool_env
 
@@ -15,31 +16,33 @@ RUST_EXTENSIONS = {".rs"}
 
 
 def _python_files(root: Path) -> list[Path]:
-    return sorted(path for path in root.rglob("*.py") if not any(part in IGNORED_PARTS for part in path.parts))
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes={".py"}))
+
+
+def _python_targets(root: Path, python_files: list[Path]) -> list[str]:
+    targets = {str((root / path.relative_to(root).parts[0])) for path in python_files}
+    return sorted(targets)
+
+
+def _changed_file_set(changed_files: list[str] | None) -> set[str]:
+    return {Path(path).as_posix() for path in changed_files or []}
+
+
+def _filter_changed_files(root: Path, files: list[Path], changed_files: list[str] | None) -> list[Path]:
+    changed_set = _changed_file_set(changed_files)
+    return [path for path in files if path.relative_to(root).as_posix() in changed_set]
 
 
 def _typescript_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file() and path.suffix in TS_EXTENSIONS and not any(part in IGNORED_PARTS for part in path.parts)
-    )
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes=TS_EXTENSIONS))
 
 
 def _go_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*.go")
-        if not any(part in IGNORED_PARTS for part in path.parts)
-    )
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes=GO_EXTENSIONS))
 
 
 def _rust_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*.rs")
-        if not any(part in IGNORED_PARTS for part in path.parts)
-    )
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes=RUST_EXTENSIONS))
 
 
 def _local_or_global_tool(root: Path, tool: str) -> str | None:
@@ -49,17 +52,18 @@ def _local_or_global_tool(root: Path, tool: str) -> str | None:
     return shutil.which(tool)
 
 
-def _build_python_command(root: Path) -> tuple[str, list[str]] | None:
+def _build_python_command(root: Path, python_files: list[Path], *, exact_targets: bool = False) -> tuple[str, list[str]] | None:
+    targets = sorted(str(path) for path in python_files) if exact_targets else _python_targets(root, python_files)
     if importlib.util.find_spec("mypy") is not None:
-        return "mypy", [sys.executable, "-m", "mypy", str(root)]
+        return "mypy", [sys.executable, "-m", "mypy", *targets]
     if shutil.which("mypy") is not None:
-        return "mypy", ["mypy", str(root)]
+        return "mypy", ["mypy", *targets]
     if shutil.which("pyright") is not None:
-        return "pyright", ["pyright", str(root)]
+        return "pyright", ["pyright", *targets]
     return None
 
 
-def _build_typescript_command(root: Path) -> tuple[str, list[str]] | None:
+def _build_typescript_command(root: Path, typescript_files: list[Path] | None = None) -> tuple[str, list[str]] | None:
     tsconfig = root / "tsconfig.json"
     if not tsconfig.exists():
         return None
@@ -67,7 +71,8 @@ def _build_typescript_command(root: Path) -> tuple[str, list[str]] | None:
     tsc = _local_or_global_tool(root, "tsc")
     if tsc is None:
         return None
-    return "tsc", [tsc, "--noEmit", "--pretty", "false"]
+    targets = [str(path) for path in typescript_files] if typescript_files else []
+    return "tsc", [tsc, "--noEmit", "--pretty", "false", *targets]
 
 
 def _build_go_command(root: Path, go_files: list[Path]) -> tuple[str, list[str]] | None:
@@ -187,12 +192,22 @@ def _run_check(
     }
 
 
-def detect_type_status(root: Path, diff_range: str | None = None, patch_path: str | None = None) -> dict:
+def detect_type_status(
+    root: Path,
+    diff_range: str | None = None,
+    patch_path: str | None = None,
+    scope: str = "all",
+    changed_files: list[str] | None = None,
+) -> dict:
     python_files = _python_files(root)
     typescript_files = _typescript_files(root)
     go_files = _go_files(root)
     rust_files = _rust_files(root)
     tsconfig_exists = (root / "tsconfig.json").exists()
+    selected_python_files = _filter_changed_files(root, python_files, changed_files) if scope == "changed" else python_files
+    selected_typescript_files = _filter_changed_files(root, typescript_files, changed_files) if scope == "changed" else typescript_files
+    selected_go_files = _filter_changed_files(root, go_files, changed_files) if scope == "changed" else go_files
+    selected_rust_files = _filter_changed_files(root, rust_files, changed_files) if scope == "changed" else rust_files
 
     if not python_files and not typescript_files and not go_files and not rust_files and not tsconfig_exists:
         return {
@@ -200,6 +215,28 @@ def detect_type_status(root: Path, diff_range: str | None = None, patch_path: st
             "status": "skipped",
             "evidence": {"file_count": 0, "language_file_counts": {}, "checks": [], "reason": "no_supported_source_files"},
             "verified": ["no supported source files found; type check skipped"],
+            "unverified": [],
+            "suspicious": [],
+            "action_items": [],
+        }
+
+    if scope == "changed" and not selected_python_files and not selected_typescript_files and not selected_go_files and not selected_rust_files:
+        return {
+            "detector": "type_check",
+            "status": "skipped",
+            "evidence": {
+                "scope": scope,
+                "file_count": 0,
+                "language_file_counts": {
+                    "python": 0,
+                    "typescript": 0,
+                    "go": 0,
+                    "rust": 0,
+                },
+                "checks": [],
+                "reason": "no_changed_supported_source_files",
+            },
+            "verified": ["no changed supported source files detected; type check skipped in changed scope"],
             "unverified": [],
             "suspicious": [],
             "action_items": [],
@@ -213,17 +250,17 @@ def detect_type_status(root: Path, diff_range: str | None = None, patch_path: st
     action_items: list[str] = []
 
     language_specs = []
-    if python_files:
+    if selected_python_files:
         language_specs.append(
             (
-                len(python_files),
+                len(selected_python_files),
                 "Python",
-                _build_python_command(root),
+                _build_python_command(root, selected_python_files, exact_targets=scope == "changed"),
                 "no mypy or pyright installation found; Python type status unavailable",
                 "install mypy or pyright, or configure a project-specific Python type check command",
             )
         )
-    if typescript_files or tsconfig_exists:
+    if selected_typescript_files or (scope != "changed" and tsconfig_exists):
         typescript_reason = (
             "tsconfig.json is missing; TypeScript type status unavailable"
             if not tsconfig_exists
@@ -234,16 +271,16 @@ def detect_type_status(root: Path, diff_range: str | None = None, patch_path: st
             if not tsconfig_exists
             else "install tsc or configure a project-specific TypeScript type check command"
         )
-        language_specs.append((len(typescript_files), "TypeScript", _build_typescript_command(root), typescript_reason, typescript_hint))
-    if go_files:
+        language_specs.append((len(selected_typescript_files), "TypeScript", _build_typescript_command(root, selected_typescript_files if scope == "changed" else None), typescript_reason, typescript_hint))
+    if selected_go_files:
         go_reason = "go.mod is missing; Go type status unavailable" if not (root / "go.mod").exists() else "go is not installed; Go type status unavailable"
         go_hint = (
             "add go.mod so Go type checking can be verified"
             if not (root / "go.mod").exists()
             else "install go or configure a project-specific Go type check command"
         )
-        language_specs.append((len(go_files), "Go", _build_go_command(root, go_files), go_reason, go_hint))
-    if rust_files:
+        language_specs.append((len(selected_go_files), "Go", _build_go_command(root, selected_go_files), go_reason, go_hint))
+    if selected_rust_files:
         rust_reason = (
             "Cargo.toml is missing; Rust type status unavailable"
             if not (root / "Cargo.toml").exists()
@@ -254,7 +291,7 @@ def detect_type_status(root: Path, diff_range: str | None = None, patch_path: st
             if not (root / "Cargo.toml").exists()
             else "install cargo or configure a project-specific Rust type check command"
         )
-        language_specs.append((len(rust_files), "Rust", _build_rust_command(root, rust_files), rust_reason, rust_hint))
+        language_specs.append((len(selected_rust_files), "Rust", _build_rust_command(root, selected_rust_files), rust_reason, rust_hint))
 
     for file_count, label, configured, reason, hint in language_specs:
         check = _run_check(
@@ -276,11 +313,12 @@ def detect_type_status(root: Path, diff_range: str | None = None, patch_path: st
         "detector": "type_check",
         "status": _overall_status(statuses),
         "evidence": {
+            "scope": scope,
             "language_file_counts": {
-                "python": len(python_files),
-                "typescript": len(typescript_files),
-                "go": len(go_files),
-                "rust": len(rust_files),
+                "python": len(selected_python_files),
+                "typescript": len(selected_typescript_files),
+                "go": len(selected_go_files),
+                "rust": len(selected_rust_files),
             },
             "tsconfig_present": tsconfig_exists,
             "checks": checks,

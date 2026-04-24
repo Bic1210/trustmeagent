@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     run_parser.add_argument("--diff", default=None, help="Optional git diff range")
     run_parser.add_argument("--patch", default=None, help="Optional patch file path")
     run_parser.add_argument("--format", choices=["json", "text", "tui"], default="text")
+    run_parser.add_argument("--scope", choices=["all", "changed"], default="all", help="Scope checks to the full project or changed files only")
     run_parser.add_argument("--with-review", action="store_true", help="Ask Claude CLI for a tester-style review summary")
     run_parser.add_argument("--no-save", action="store_true", help="Do not persist run artifacts under runs/")
     return parser.parse_args()
@@ -30,6 +31,7 @@ def main() -> None:
         root=root,
         diff_range=args.diff,
         patch_path=args.patch,
+        scope=args.scope,
         with_review=args.with_review,
     )
     run_dir = None
@@ -39,6 +41,7 @@ def main() -> None:
             result,
             diff_range=args.diff,
             patch_path=args.patch,
+            scope=args.scope,
             with_review=args.with_review,
             argv=sys.argv,
         )

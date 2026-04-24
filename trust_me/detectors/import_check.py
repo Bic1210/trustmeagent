@@ -7,6 +7,7 @@ import re
 import sys
 from pathlib import Path
 
+from trust_me.utils.paths import iter_files
 from trust_me.utils.subprocess import run_command
 from trust_me.utils.tool_env import go_tool_env
 
@@ -52,6 +53,15 @@ IMPORT_PATTERNS = [
 ]
 
 
+def _changed_file_set(changed_files: list[str] | None) -> set[str]:
+    return {Path(path).as_posix() for path in changed_files or []}
+
+
+def _filter_changed_files(root: Path, files: list[Path], changed_files: list[str] | None) -> list[Path]:
+    changed_set = _changed_file_set(changed_files)
+    return [path for path in files if path.relative_to(root).as_posix() in changed_set]
+
+
 def _all_source_files(root: Path) -> list[Path]:
     extensions = (
         PYTHON_EXTENSIONS
@@ -61,11 +71,7 @@ def _all_source_files(root: Path) -> list[Path]:
         | RUST_EXTENSIONS
         | set(UNSUPPORTED_LANGUAGE_EXTENSIONS)
     )
-    return sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file() and path.suffix in extensions and not any(part in IGNORED_PARTS for part in path.parts)
-    )
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes=extensions))
 
 
 def _python_files(files: list[Path]) -> list[Path]:
@@ -212,9 +218,7 @@ def _scan_python_imports(root: Path, path: Path, local_modules: set[str]) -> tup
 
 def _declared_js_packages(root: Path) -> set[str]:
     packages: set[str] = set()
-    for package_json in root.rglob("package.json"):
-        if any(part in IGNORED_PARTS for part in package_json.parts):
-            continue
+    for package_json in iter_files(root, ignored_parts=IGNORED_PARTS, exact_names={"package.json"}):
         try:
             payload = json.loads(package_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -412,7 +416,13 @@ def _build_evidence(
     }
 
 
-def detect_missing_import_risk(root: Path, diff_range: str | None = None, patch_path: str | None = None) -> dict:
+def detect_missing_import_risk(
+    root: Path,
+    diff_range: str | None = None,
+    patch_path: str | None = None,
+    scope: str = "all",
+    changed_files: list[str] | None = None,
+) -> dict:
     source_files = _all_source_files(root)
     if not source_files:
         return {
@@ -429,49 +439,66 @@ def detect_missing_import_risk(root: Path, diff_range: str | None = None, patch_
     javascript_files = _javascript_files(source_files)
     go_files = _go_files(source_files)
     rust_files = _rust_files(source_files)
-    unsupported_languages = _unsupported_language_counts(source_files)
+    selected_source_files = _filter_changed_files(root, source_files, changed_files) if scope == "changed" else source_files
+    selected_python_files = _filter_changed_files(root, python_files, changed_files) if scope == "changed" else python_files
+    selected_javascript_files = _filter_changed_files(root, javascript_files, changed_files) if scope == "changed" else javascript_files
+    selected_go_files = _filter_changed_files(root, go_files, changed_files) if scope == "changed" else go_files
+    selected_rust_files = _filter_changed_files(root, rust_files, changed_files) if scope == "changed" else rust_files
+    unsupported_languages = _unsupported_language_counts(selected_source_files)
+
+    if scope == "changed" and not selected_source_files:
+        return {
+            "detector": "import_check",
+            "status": "skipped",
+            "evidence": {"scope": scope, "reason": "no_changed_supported_source_files", "language_file_counts": {}},
+            "verified": ["no changed supported source files detected; import scan skipped in changed scope"],
+            "unverified": [],
+            "suspicious": [],
+            "action_items": [],
+        }
 
     python_missing: list[str] = []
     js_missing: list[str] = []
     parse_errors: list[str] = []
 
-    if python_files:
+    if selected_python_files:
         local_modules = _local_python_modules(root, python_files)
-        for path in python_files:
+        for path in selected_python_files:
             file_missing, parse_error = _scan_python_imports(root, path, local_modules)
             python_missing.extend(file_missing)
             if parse_error is not None:
                 parse_errors.append(parse_error)
 
-    if javascript_files:
+    if selected_javascript_files:
         declared_packages = _declared_js_packages(root)
-        for path in javascript_files:
+        for path in selected_javascript_files:
             file_missing, parse_error = _scan_javascript_imports(root, path, declared_packages)
             js_missing.extend(file_missing)
             if parse_error is not None:
                 parse_errors.append(parse_error)
 
-    go_check = _go_import_check(root, go_files)
-    rust_check = _rust_import_check(root, rust_files)
+    go_check = _go_import_check(root, selected_go_files)
+    rust_check = _rust_import_check(root, selected_rust_files)
     language_checks = [check["evidence"] for check in (go_check, rust_check) if check["evidence"]]
 
     evidence = _build_evidence(
-        python_files=python_files,
-        javascript_files=javascript_files,
-        go_files=go_files,
-        rust_files=rust_files,
+        python_files=selected_python_files,
+        javascript_files=selected_javascript_files,
+        go_files=selected_go_files,
+        rust_files=selected_rust_files,
         python_missing=python_missing,
         js_missing=js_missing,
         parse_errors=parse_errors,
         unsupported_languages=unsupported_languages,
         language_checks=language_checks,
     )
+    evidence["scope"] = scope
 
     verified: list[str] = []
-    if python_files and not python_missing:
-        verified.append(f"no unresolved Python imports detected across {len(python_files)} files")
-    if javascript_files and not js_missing:
-        verified.append(f"no unresolved JavaScript/TypeScript imports detected across {len(javascript_files)} files")
+    if selected_python_files and not python_missing:
+        verified.append(f"no unresolved Python imports detected across {len(selected_python_files)} files")
+    if selected_javascript_files and not js_missing:
+        verified.append(f"no unresolved JavaScript/TypeScript imports detected across {len(selected_javascript_files)} files")
     verified.extend(go_check["verified"])
     verified.extend(rust_check["verified"])
 
@@ -487,11 +514,11 @@ def detect_missing_import_risk(root: Path, diff_range: str | None = None, patch_
     suspicious: list[str] = []
     action_items: list[str] = []
     if python_missing:
-        suspicious.append(f"found {len(python_missing)} unresolved import references across {len(python_files)} Python files")
+        suspicious.append(f"found {len(python_missing)} unresolved import references across {len(selected_python_files)} Python files")
         action_items.append(f"inspect Python import scan findings: {python_missing[0]}")
     if js_missing:
         suspicious.append(
-            f"found {len(js_missing)} unresolved import references across {len(javascript_files)} JavaScript/TypeScript files"
+            f"found {len(js_missing)} unresolved import references across {len(selected_javascript_files)} JavaScript/TypeScript files"
         )
         action_items.append(f"inspect JavaScript/TypeScript import scan findings: {js_missing[0]}")
     if parse_errors:

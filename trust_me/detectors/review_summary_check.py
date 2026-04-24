@@ -13,7 +13,15 @@ def _list_of_strings(payload: dict[str, Any], key: str) -> list[str]:
     return [item for item in value if isinstance(item, str) and item.strip()]
 
 
-def detect_review_summary(root: Path, report: dict[str, Any], diff_range: str | None = None, patch_path: str | None = None) -> dict:
+def detect_review_summary(
+    root: Path,
+    report: dict[str, Any],
+    diff_range: str | None = None,
+    patch_path: str | None = None,
+    scope: str = "all",
+    changed_files: list[str] | None = None,
+) -> dict:
+    _ = scope, changed_files
     prompt = build_review_prompt(report)
     code, payload, error = run_claude_json(prompt, cwd=root)
     if code == 127:

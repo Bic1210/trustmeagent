@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from trust_me import cli
 from tests.git_helpers import commit_files, init_repo
@@ -15,8 +15,8 @@ class CliTests(unittest.TestCase):
     @patch("trust_me.cli.persist_run_artifacts")
     def test_main_renders_text_report_and_artifact_path(
         self,
-        mock_persist_run_artifacts: object,
-        mock_run_harness: object,
+        mock_persist_run_artifacts: MagicMock,
+        mock_run_harness: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -48,9 +48,9 @@ class CliTests(unittest.TestCase):
     @patch("trust_me.cli.persist_run_artifacts")
     def test_main_routes_tui_format_into_interactive_renderer(
         self,
-        mock_persist_run_artifacts: object,
-        mock_run_harness: object,
-        mock_run_tui: object,
+        mock_persist_run_artifacts: MagicMock,
+        mock_run_harness: MagicMock,
+        mock_run_tui: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -72,8 +72,8 @@ class CliTests(unittest.TestCase):
     @patch("trust_me.cli.persist_run_artifacts")
     def test_main_renders_json_without_artifact_message(
         self,
-        mock_persist_run_artifacts: object,
-        mock_run_harness: object,
+        mock_persist_run_artifacts: MagicMock,
+        mock_run_harness: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -100,8 +100,8 @@ class CliTests(unittest.TestCase):
     @patch("trust_me.cli.run_harness")
     def test_main_respects_no_save_flag(
         self,
-        mock_run_harness: object,
-        mock_persist_run_artifacts: object,
+        mock_run_harness: MagicMock,
+        mock_persist_run_artifacts: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -138,8 +138,8 @@ class CliTests(unittest.TestCase):
     @patch("trust_me.cli.run_harness")
     def test_main_passes_with_review_flag_into_harness(
         self,
-        mock_run_harness: object,
-        mock_persist_run_artifacts: object,
+        mock_run_harness: MagicMock,
+        mock_persist_run_artifacts: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -164,7 +164,37 @@ class CliTests(unittest.TestCase):
             root=root.resolve(),
             diff_range=None,
             patch_path="demo.patch",
+            scope="all",
             with_review=True,
+        )
+        mock_persist_run_artifacts.assert_called_once()
+
+    @patch("trust_me.cli.persist_run_artifacts")
+    @patch("trust_me.cli.run_harness")
+    def test_main_passes_changed_scope_into_harness(
+        self,
+        mock_run_harness: MagicMock,
+        mock_persist_run_artifacts: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            mock_run_harness.return_value = {
+                "verified": [],
+                "unverified": [],
+                "suspicious": [],
+                "action_items": [],
+            }
+            mock_persist_run_artifacts.return_value = root / "runs" / "run_2026_04_22_220000"
+
+            with patch("sys.argv", ["trust-me", "run", "--root", str(root), "--scope", "changed"]):
+                cli.main()
+
+        mock_run_harness.assert_called_once_with(
+            root=root.resolve(),
+            diff_range=None,
+            patch_path=None,
+            scope="changed",
+            with_review=False,
         )
         mock_persist_run_artifacts.assert_called_once()
 
@@ -172,8 +202,8 @@ class CliTests(unittest.TestCase):
     @patch("trust_me.cli.run_harness")
     def test_main_renders_review_narrative_in_text_mode(
         self,
-        mock_run_harness: object,
-        mock_persist_run_artifacts: object,
+        mock_run_harness: MagicMock,
+        mock_persist_run_artifacts: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

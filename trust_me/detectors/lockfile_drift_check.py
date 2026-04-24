@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypedDict
 
 from trust_me.utils.diff import load_patch_text, parse_diff_scope
 
-MANIFEST_RULES: dict[str, dict[str, object]] = {
+
+class ManifestRule(TypedDict):
+    label: str
+    lockfiles: list[str]
+
+
+MANIFEST_RULES: dict[str, ManifestRule] = {
     "package.json": {
         "label": "JavaScript dependencies",
         "lockfiles": ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"],
@@ -39,7 +46,14 @@ def _candidate_lockfiles(relative_path: str, lockfile_names: list[str]) -> list[
     return [str(parent / name) for name in lockfile_names]
 
 
-def detect_lockfile_drift(root: Path, diff_range: str | None = None, patch_path: str | None = None) -> dict:
+def detect_lockfile_drift(
+    root: Path,
+    diff_range: str | None = None,
+    patch_path: str | None = None,
+    scope: str = "all",
+    changed_files: list[str] | None = None,
+) -> dict:
+    _ = scope, changed_files
     diff_text, source, error, notes = load_patch_text(root, patch_path, diff_range)
     if error:
         return {
@@ -64,7 +78,7 @@ def detect_lockfile_drift(root: Path, diff_range: str | None = None, patch_path:
         }
 
     parsed = parse_diff_scope(diff_text)
-    changed_files = set(parsed["changed_files"])
+    changed_file_set = set(parsed["changed_files"])
 
     verified: list[str] = []
     unverified: list[str] = []
@@ -72,14 +86,14 @@ def detect_lockfile_drift(root: Path, diff_range: str | None = None, patch_path:
     action_items: list[str] = []
     manifest_checks: list[dict[str, object]] = []
 
-    for changed_file in sorted(changed_files):
+    for changed_file in sorted(changed_file_set):
         manifest_name = Path(changed_file).name
         rule = MANIFEST_RULES.get(manifest_name)
         if rule is None:
             continue
 
         lockfiles = _candidate_lockfiles(changed_file, list(rule["lockfiles"]))
-        changed_lockfiles = [lockfile for lockfile in lockfiles if lockfile in changed_files]
+        changed_lockfiles = [lockfile for lockfile in lockfiles if lockfile in changed_file_set]
         existing_lockfiles = [lockfile for lockfile in lockfiles if (root / lockfile).exists()]
         label = str(rule["label"])
         manifest_checks.append(
@@ -107,7 +121,7 @@ def detect_lockfile_drift(root: Path, diff_range: str | None = None, patch_path:
     evidence = {
         "source": source,
         "notes": notes,
-        "changed_files": sorted(changed_files),
+        "changed_files": sorted(changed_file_set),
         "manifest_checks": manifest_checks,
     }
 

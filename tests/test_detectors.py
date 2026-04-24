@@ -1,7 +1,8 @@
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from trust_me.detectors.import_check import detect_missing_import_risk
 from trust_me.detectors.lint_check import detect_lint_status
@@ -23,7 +24,7 @@ class LintDetectorTests(unittest.TestCase):
 
     @patch("trust_me.detectors.lint_check.importlib.util.find_spec", return_value=None)
     @patch("trust_me.detectors.lint_check.shutil.which", return_value=None)
-    def test_detect_lint_status_reports_missing_ruff(self, _mock_which: object, _mock_find_spec: object) -> None:
+    def test_detect_lint_status_reports_missing_ruff(self, _mock_which: MagicMock, _mock_find_spec: MagicMock) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             (root / "app.py").write_text("print('hello')\n", encoding="utf-8")
@@ -40,7 +41,7 @@ class LintDetectorTests(unittest.TestCase):
 
     @patch("trust_me.detectors.lint_check.run_command", return_value=(0, "", ""))
     @patch("trust_me.detectors.lint_check.importlib.util.find_spec", return_value=object())
-    def test_detect_lint_status_reports_success(self, _mock_find_spec: object, mock_run_command: object) -> None:
+    def test_detect_lint_status_reports_success(self, _mock_find_spec: MagicMock, mock_run_command: MagicMock) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             (root / "app.py").write_text("print('hello')\n", encoding="utf-8")
@@ -56,13 +57,36 @@ class LintDetectorTests(unittest.TestCase):
         self.assertEqual(result["unverified"], [])
         self.assertEqual(result["suspicious"], [])
         mock_run_command.assert_called_once()
+        command = mock_run_command.call_args.args[0]
+        self.assertNotIn(str(root), command)
+        self.assertIn(str(root / "app.py"), command)
+        self.assertIn(str(root / "worker.py"), command)
+
+    @patch("trust_me.detectors.lint_check.run_command", return_value=(0, "", ""))
+    @patch("trust_me.detectors.lint_check.importlib.util.find_spec", return_value=object())
+    def test_detect_lint_status_limits_python_targets_in_changed_scope(
+        self,
+        _mock_find_spec: MagicMock,
+        mock_run_command: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+            (root / "worker.py").write_text("print('world')\n", encoding="utf-8")
+
+            result = detect_lint_status(root, scope="changed", changed_files=["worker.py"])
+
+        self.assertEqual(result["status"], "passed")
+        command = mock_run_command.call_args.args[0]
+        self.assertIn(str(root / "worker.py"), command)
+        self.assertNotIn(str(root / "app.py"), command)
 
     @patch(
         "trust_me.detectors.lint_check.run_command",
         return_value=(1, "app.py:1:1: F401 imported but unused\n", ""),
     )
     @patch("trust_me.detectors.lint_check.importlib.util.find_spec", return_value=object())
-    def test_detect_lint_status_reports_lint_findings(self, _mock_find_spec: object, _mock_run_command: object) -> None:
+    def test_detect_lint_status_reports_lint_findings(self, _mock_find_spec: MagicMock, _mock_run_command: MagicMock) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             (root / "app.py").write_text("import os\n", encoding="utf-8")
@@ -82,9 +106,9 @@ class LintDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.lint_check.importlib.util.find_spec", return_value=None)
     def test_detect_lint_status_reports_javascript_success(
         self,
-        _mock_find_spec: object,
-        _mock_which: object,
-        mock_run_command: object,
+        _mock_find_spec: MagicMock,
+        _mock_which: MagicMock,
+        mock_run_command: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -105,9 +129,9 @@ class LintDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.lint_check.importlib.util.find_spec", return_value=None)
     def test_detect_lint_status_reports_partial_when_python_and_javascript_have_mixed_configuration(
         self,
-        _mock_find_spec: object,
-        _mock_which: object,
-        mock_run_command: object,
+        _mock_find_spec: MagicMock,
+        _mock_which: MagicMock,
+        mock_run_command: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -141,8 +165,8 @@ class TypeDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.type_check.shutil.which", return_value=None)
     def test_detect_type_status_reports_missing_type_checker(
         self,
-        _mock_which: object,
-        _mock_find_spec: object,
+        _mock_which: MagicMock,
+        _mock_find_spec: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -160,7 +184,7 @@ class TypeDetectorTests(unittest.TestCase):
 
     @patch("trust_me.detectors.type_check.run_command", return_value=(0, "", ""))
     @patch("trust_me.detectors.type_check.importlib.util.find_spec", return_value=object())
-    def test_detect_type_status_reports_success(self, _mock_find_spec: object, mock_run_command: object) -> None:
+    def test_detect_type_status_reports_success(self, _mock_find_spec: MagicMock, mock_run_command: MagicMock) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             (root / "app.py").write_text("print('hello')\n", encoding="utf-8")
@@ -177,6 +201,29 @@ class TypeDetectorTests(unittest.TestCase):
         self.assertEqual(result["unverified"], [])
         self.assertEqual(result["suspicious"], [])
         mock_run_command.assert_called_once()
+        command = mock_run_command.call_args.args[0]
+        self.assertNotIn(str(root), command)
+        self.assertIn(str(root / "app.py"), command)
+        self.assertIn(str(root / "worker.py"), command)
+
+    @patch("trust_me.detectors.type_check.run_command", return_value=(0, "", ""))
+    @patch("trust_me.detectors.type_check.importlib.util.find_spec", return_value=object())
+    def test_detect_type_status_limits_python_targets_in_changed_scope(
+        self,
+        _mock_find_spec: MagicMock,
+        mock_run_command: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+            (root / "worker.py").write_text("print('world')\n", encoding="utf-8")
+
+            result = detect_type_status(root, scope="changed", changed_files=["worker.py"])
+
+        self.assertEqual(result["status"], "passed")
+        command = mock_run_command.call_args.args[0]
+        self.assertIn(str(root / "worker.py"), command)
+        self.assertNotIn(str(root / "app.py"), command)
 
     @patch(
         "trust_me.detectors.type_check.run_command",
@@ -185,8 +232,8 @@ class TypeDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.type_check.importlib.util.find_spec", return_value=object())
     def test_detect_type_status_reports_type_findings(
         self,
-        _mock_find_spec: object,
-        _mock_run_command: object,
+        _mock_find_spec: MagicMock,
+        _mock_run_command: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -208,9 +255,9 @@ class TypeDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.type_check.importlib.util.find_spec", return_value=None)
     def test_detect_type_status_reports_typescript_success(
         self,
-        _mock_find_spec: object,
-        _mock_which: object,
-        mock_run_command: object,
+        _mock_find_spec: MagicMock,
+        _mock_which: MagicMock,
+        mock_run_command: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -230,8 +277,8 @@ class TypeDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.type_check.shutil.which", return_value=None)
     def test_detect_type_status_reports_missing_tsconfig_for_typescript_sources(
         self,
-        _mock_which: object,
-        _mock_find_spec: object,
+        _mock_which: MagicMock,
+        _mock_find_spec: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -263,9 +310,9 @@ class TestDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.test_check.run_command", return_value=(0, "", "Ran 3 tests in 0.01s\nOK\n"))
     def test_detect_test_status_runs_unittest_when_pytest_is_unavailable(
         self,
-        mock_run_command: object,
-        _mock_which: object,
-        _mock_find_spec: object,
+        mock_run_command: MagicMock,
+        _mock_which: MagicMock,
+        _mock_find_spec: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -284,6 +331,50 @@ class TestDetectorTests(unittest.TestCase):
         self.assertEqual(result["suspicious"], [])
         mock_run_command.assert_called_once()
 
+    @patch("trust_me.detectors.test_check.importlib.util.find_spec", return_value=None)
+    @patch("trust_me.detectors.test_check.shutil.which", return_value=None)
+    @patch("trust_me.detectors.test_check.run_command", return_value=(0, "", "Ran 1 tests in 0.01s\nOK\n"))
+    def test_detect_test_status_runs_changed_python_test_modules_in_changed_scope(
+        self,
+        mock_run_command: MagicMock,
+        _mock_which: MagicMock,
+        _mock_find_spec: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            tests_dir = root / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "test_alpha.py").write_text("def test_alpha(): pass\n", encoding="utf-8")
+            (tests_dir / "test_beta.py").write_text("def test_beta(): pass\n", encoding="utf-8")
+
+            result = detect_test_status(root, scope="changed", changed_files=["tests/test_beta.py"])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["evidence"]["scope"], "changed")
+        self.assertEqual(
+            mock_run_command.call_args.args[0],
+            [sys.executable, "-m", "unittest", "-q", "-b", "tests.test_beta"],
+        )
+
+    @patch("trust_me.detectors.test_check.importlib.util.find_spec", return_value=None)
+    @patch("trust_me.detectors.test_check.shutil.which", return_value=None)
+    def test_detect_test_status_marks_python_unverified_when_no_changed_tests_exist(
+        self,
+        _mock_which: MagicMock,
+        _mock_find_spec: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            tests_dir = root / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "test_sample.py").write_text("def test_example(): pass\n", encoding="utf-8")
+            (root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+            result = detect_test_status(root, scope="changed", changed_files=["app.py"])
+
+        self.assertEqual(result["status"], "partial")
+        self.assertIn("no changed Python test files detected; Python test execution skipped in changed scope", result["unverified"])
+
     @patch(
         "trust_me.detectors.test_check.run_command",
         return_value=(1, "FAILED (failures=1)\n", "Ran 2 tests in 0.02s\n"),
@@ -291,8 +382,8 @@ class TestDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.test_check.importlib.util.find_spec", return_value=object())
     def test_detect_test_status_reports_test_failures(
         self,
-        _mock_find_spec: object,
-        _mock_run_command: object,
+        _mock_find_spec: MagicMock,
+        _mock_run_command: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -316,9 +407,9 @@ class TestDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.test_check.importlib.util.find_spec", return_value=None)
     def test_detect_test_status_reports_javascript_success(
         self,
-        _mock_find_spec: object,
-        _mock_which: object,
-        mock_run_command: object,
+        _mock_find_spec: MagicMock,
+        _mock_which: MagicMock,
+        mock_run_command: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -337,8 +428,8 @@ class TestDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.test_check.shutil.which", return_value=None)
     def test_detect_test_status_reports_missing_javascript_runner(
         self,
-        _mock_which: object,
-        _mock_find_spec: object,
+        _mock_which: MagicMock,
+        _mock_find_spec: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -360,9 +451,9 @@ class TestDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.test_check.importlib.util.find_spec", return_value=None)
     def test_detect_test_status_reports_rust_success(
         self,
-        _mock_find_spec: object,
-        _mock_which: object,
-        mock_run_command: object,
+        _mock_find_spec: MagicMock,
+        _mock_which: MagicMock,
+        mock_run_command: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -383,9 +474,9 @@ class TestDetectorTests(unittest.TestCase):
     @patch("trust_me.detectors.test_check.importlib.util.find_spec", return_value=None)
     def test_detect_test_status_reports_go_success(
         self,
-        _mock_find_spec: object,
-        _mock_which: object,
-        mock_run_command: object,
+        _mock_find_spec: MagicMock,
+        _mock_which: MagicMock,
+        mock_run_command: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -506,6 +597,30 @@ class ImportDetectorTests(unittest.TestCase):
         self.assertEqual(result["suspicious"], [])
         self.assertEqual(result["unverified"], ["go.mod is missing; Go import status unavailable"])
         self.assertEqual(result["action_items"], ["add go.mod so Go import resolution can be verified"])
+
+    def test_detect_missing_import_risk_limits_python_scan_in_changed_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "app.py").write_text("import os\n", encoding="utf-8")
+            (root / "worker.py").write_text("import missing_dep\n", encoding="utf-8")
+
+            result = detect_missing_import_risk(root, scope="changed", changed_files=["app.py"])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["evidence"]["scope"], "changed")
+        self.assertEqual(result["evidence"]["language_file_counts"]["python"], 1)
+        self.assertEqual(result["verified"], ["no unresolved Python imports detected across 1 files"])
+
+    def test_detect_missing_import_risk_skips_when_no_changed_supported_files_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "app.py").write_text("import os\n", encoding="utf-8")
+            (root / "README.md").write_text("docs\n", encoding="utf-8")
+
+            result = detect_missing_import_risk(root, scope="changed", changed_files=["README.md"])
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["evidence"]["reason"], "no_changed_supported_source_files")
 
 
 if __name__ == "__main__":

@@ -27,9 +27,11 @@ def _detector_rows(report: dict) -> list[str]:
     for detector in report.get("detectors", []):
         name = str(detector.get("detector", "unknown"))
         status = str(detector.get("status", "completed"))
+        duration = detector.get("duration_seconds")
+        duration_text = f"{float(duration):>6.3f}s" if isinstance(duration, (int, float)) else "   n/a "
         findings = detector.get("suspicious") or detector.get("unverified") or detector.get("verified") or ["none"]
         primary = str(findings[0])
-        rows.append(f"- {name:<22} {status:<15} {primary}")
+        rows.append(f"- {name:<22} {status:<15} {duration_text}  {primary}")
     return rows
 
 
@@ -54,6 +56,24 @@ def _review_block(report: dict) -> list[str]:
     return []
 
 
+def _timing_block(report: dict) -> list[str]:
+    detectors = report.get("detectors", [])
+    timed = [
+        detector for detector in detectors if isinstance(detector.get("duration_seconds"), (int, float))
+    ]
+    lines = [f"total: {float(report.get('duration_seconds', 0.0)):.3f}s"]
+    if not timed:
+        lines.append("detectors: none")
+        return lines
+
+    ordered = sorted(timed, key=lambda detector: float(detector.get("duration_seconds", 0.0)), reverse=True)
+    lines.extend(
+        f"{detector.get('detector', 'unknown')}: {float(detector.get('duration_seconds', 0.0)):.3f}s"
+        for detector in ordered[:5]
+    )
+    return lines
+
+
 def _section(title: str, items: list[str]) -> list[str]:
     lines = [title]
     if not items:
@@ -70,6 +90,8 @@ def render_text(report: dict, run_dir: str | None = None) -> str:
         f"Confidence: {score}% ({_headline(score)})",
         f"Root: {report.get('root', '.')}",
         f"Input: diff={report.get('diff_range') or 'working tree'} patch={report.get('patch_path') or 'none'}",
+        f"Scope: requested={report.get('requested_scope', 'all')} effective={report.get('effective_scope', 'all')}",
+        f"Duration: {float(report.get('duration_seconds', 0.0)):.3f}s",
         f"Counts: verified={_count(report, 'verified')} unverified={_count(report, 'unverified')} suspicious={_count(report, 'suspicious')} action_items={_count(report, 'action_items')}",
         "",
         "Detector Breakdown",
@@ -80,6 +102,12 @@ def render_text(report: dict, run_dir: str | None = None) -> str:
         lines.extend(detector_rows)
     else:
         lines.append("- no detector output")
+
+    lines.extend(["", *_section("Timing", _timing_block(report))])
+
+    scope_notes = report.get("scope_notes", [])
+    if scope_notes:
+        lines.extend(["", *_section("Scope Notes", scope_notes)])
 
     review_lines = _review_block(report)
     if review_lines:

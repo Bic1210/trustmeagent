@@ -5,6 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from trust_me.utils.paths import iter_files
 from trust_me.utils.subprocess import run_command
 
 IGNORED_PARTS = {"__pycache__", ".git", ".venv", "node_modules", "target"}
@@ -14,31 +15,33 @@ RUST_EXTENSIONS = {".rs"}
 
 
 def _python_files(root: Path) -> list[Path]:
-    return sorted(path for path in root.rglob("*.py") if not any(part in IGNORED_PARTS for part in path.parts))
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes={".py"}))
+
+
+def _python_targets(root: Path, python_files: list[Path]) -> list[str]:
+    targets = {str((root / path.relative_to(root).parts[0])) for path in python_files}
+    return sorted(targets)
+
+
+def _changed_file_set(changed_files: list[str] | None) -> set[str]:
+    return {Path(path).as_posix() for path in changed_files or []}
+
+
+def _filter_changed_files(root: Path, files: list[Path], changed_files: list[str] | None) -> list[Path]:
+    changed_set = _changed_file_set(changed_files)
+    return [path for path in files if path.relative_to(root).as_posix() in changed_set]
 
 
 def _javascript_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file() and path.suffix in JS_EXTENSIONS and not any(part in IGNORED_PARTS for part in path.parts)
-    )
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes=JS_EXTENSIONS))
 
 
 def _go_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*.go")
-        if not any(part in IGNORED_PARTS for part in path.parts)
-    )
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes=GO_EXTENSIONS))
 
 
 def _rust_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*.rs")
-        if not any(part in IGNORED_PARTS for part in path.parts)
-    )
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes=RUST_EXTENSIONS))
 
 
 def _local_or_global_tool(root: Path, tool: str) -> str | None:
@@ -48,22 +51,24 @@ def _local_or_global_tool(root: Path, tool: str) -> str | None:
     return shutil.which(tool)
 
 
-def _build_python_command(root: Path) -> tuple[str, list[str]] | None:
+def _build_python_command(root: Path, python_files: list[Path], *, exact_targets: bool = False) -> tuple[str, list[str]] | None:
+    targets = sorted(str(path) for path in python_files) if exact_targets else _python_targets(root, python_files)
     if importlib.util.find_spec("ruff") is not None:
-        return "ruff", [sys.executable, "-m", "ruff", "check", str(root)]
+        return "ruff", [sys.executable, "-m", "ruff", "check", *targets]
     if shutil.which("ruff") is not None:
-        return "ruff", ["ruff", "check", str(root)]
+        return "ruff", ["ruff", "check", *targets]
     return None
 
 
-def _build_javascript_command(root: Path) -> tuple[str, list[str]] | None:
+def _build_javascript_command(root: Path, javascript_files: list[Path] | None = None) -> tuple[str, list[str]] | None:
+    targets = [str(path) for path in javascript_files] if javascript_files else ["."]
     eslint = _local_or_global_tool(root, "eslint")
     if eslint is not None:
-        return "eslint", [eslint, "."]
+        return "eslint", [eslint, *targets]
 
     biome = _local_or_global_tool(root, "biome")
     if biome is not None:
-        return "biome", [biome, "check", "."]
+        return "biome", [biome, "check", *targets]
 
     return None
 
@@ -188,11 +193,21 @@ def _run_check(
     }
 
 
-def detect_lint_status(root: Path, diff_range: str | None = None, patch_path: str | None = None) -> dict:
+def detect_lint_status(
+    root: Path,
+    diff_range: str | None = None,
+    patch_path: str | None = None,
+    scope: str = "all",
+    changed_files: list[str] | None = None,
+) -> dict:
     python_files = _python_files(root)
     javascript_files = _javascript_files(root)
     go_files = _go_files(root)
     rust_files = _rust_files(root)
+    selected_python_files = _filter_changed_files(root, python_files, changed_files) if scope == "changed" else python_files
+    selected_javascript_files = _filter_changed_files(root, javascript_files, changed_files) if scope == "changed" else javascript_files
+    selected_go_files = _filter_changed_files(root, go_files, changed_files) if scope == "changed" else go_files
+    selected_rust_files = _filter_changed_files(root, rust_files, changed_files) if scope == "changed" else rust_files
 
     if not python_files and not javascript_files and not go_files and not rust_files:
         return {
@@ -200,6 +215,28 @@ def detect_lint_status(root: Path, diff_range: str | None = None, patch_path: st
             "status": "skipped",
             "evidence": {"file_count": 0, "language_file_counts": {}, "checks": [], "reason": "no_supported_source_files"},
             "verified": ["no supported source files found; lint check skipped"],
+            "unverified": [],
+            "suspicious": [],
+            "action_items": [],
+        }
+
+    if scope == "changed" and not selected_python_files and not selected_javascript_files and not selected_go_files and not selected_rust_files:
+        return {
+            "detector": "lint_check",
+            "status": "skipped",
+            "evidence": {
+                "scope": scope,
+                "file_count": 0,
+                "language_file_counts": {
+                    "python": 0,
+                    "javascript_or_typescript": 0,
+                    "go": 0,
+                    "rust": 0,
+                },
+                "checks": [],
+                "reason": "no_changed_supported_source_files",
+            },
+            "verified": ["no changed supported source files detected; lint check skipped in changed scope"],
             "unverified": [],
             "suspicious": [],
             "action_items": [],
@@ -214,30 +251,30 @@ def detect_lint_status(root: Path, diff_range: str | None = None, patch_path: st
 
     language_specs = [
         (
-            python_files,
+            selected_python_files,
             "Python",
-            _build_python_command(root),
+            _build_python_command(root, selected_python_files, exact_targets=scope == "changed"),
             "ruff is not installed; Python lint status unavailable",
             "install ruff or configure an alternative Python lint command",
         ),
         (
-            javascript_files,
+            selected_javascript_files,
             "JavaScript/TypeScript",
-            _build_javascript_command(root),
+            _build_javascript_command(root, selected_javascript_files if scope == "changed" else None),
             "no eslint or biome installation found; JavaScript/TypeScript lint status unavailable",
             "install eslint or biome, or configure a project-specific JavaScript/TypeScript lint command",
         ),
         (
-            go_files,
+            selected_go_files,
             "Go",
-            _build_go_command(go_files),
+            _build_go_command(selected_go_files),
             "gofmt is not installed; Go lint status unavailable",
             "install gofmt or configure a project-specific Go lint command",
         ),
         (
-            rust_files,
+            selected_rust_files,
             "Rust",
-            _build_rust_command(root, rust_files),
+            _build_rust_command(root, selected_rust_files),
             "rustfmt is not installed; Rust lint status unavailable",
             "install rustfmt or configure a project-specific Rust lint command",
         ),
@@ -265,11 +302,12 @@ def detect_lint_status(root: Path, diff_range: str | None = None, patch_path: st
         "detector": "lint_check",
         "status": _overall_status(statuses),
         "evidence": {
+            "scope": scope,
             "language_file_counts": {
-                "python": len(python_files),
-                "javascript_or_typescript": len(javascript_files),
-                "go": len(go_files),
-                "rust": len(rust_files),
+                "python": len(selected_python_files),
+                "javascript_or_typescript": len(selected_javascript_files),
+                "go": len(selected_go_files),
+                "rust": len(selected_rust_files),
             },
             "checks": checks,
         },

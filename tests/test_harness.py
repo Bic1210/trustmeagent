@@ -1,7 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 from trust_me.harness import run_harness
 
@@ -17,14 +18,14 @@ class HarnessTests(unittest.TestCase):
     @patch("trust_me.harness.detect_lint_status")
     def test_run_harness_preserves_detector_results_and_aggregates_buckets(
         self,
-        mock_lint: object,
-        mock_type: object,
-        mock_build: object,
-        mock_test: object,
-        mock_import: object,
-        mock_scope: object,
-        mock_lockfile: object,
-        mock_core: object,
+        mock_lint: MagicMock,
+        mock_type: MagicMock,
+        mock_build: MagicMock,
+        mock_test: MagicMock,
+        mock_import: MagicMock,
+        mock_scope: MagicMock,
+        mock_lockfile: MagicMock,
+        mock_core: MagicMock,
     ) -> None:
         mock_lint.return_value = {
             "detector": "lint_check",
@@ -56,11 +57,15 @@ class HarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             report = run_harness(Path(tmp_dir))
 
+        self.assertEqual(report["requested_scope"], "all")
+        self.assertEqual(report["effective_scope"], "all")
+        self.assertIsInstance(report["duration_seconds"], float)
         self.assertEqual(report["verified"], ["ruff passed", "compileall build smoke check passed"])
         self.assertEqual(report["unverified"], ["type check not wired yet"])
         self.assertEqual(len(report["detectors"]), 8)
         self.assertEqual(report["detectors"][0]["detector"], "lint_check")
         self.assertEqual(report["detectors"][0]["status"], "passed")
+        self.assertIsInstance(report["detectors"][0]["duration_seconds"], float)
         self.assertEqual(report["detectors"][0]["evidence"], {"exit_code": 0})
         self.assertEqual(report["detectors"][1]["detector"], "detect_type_status")
         self.assertEqual(report["detectors"][1]["status"], "completed")
@@ -76,17 +81,17 @@ class HarnessTests(unittest.TestCase):
     @patch("trust_me.harness.detect_lint_status")
     def test_run_harness_optionally_appends_review_summary(
         self,
-        mock_lint: object,
-        mock_type: object,
-        mock_build: object,
-        mock_test: object,
-        mock_import: object,
-        mock_scope: object,
-        mock_lockfile: object,
-        mock_core: object,
-        mock_review: object,
+        mock_lint: MagicMock,
+        mock_type: MagicMock,
+        mock_build: MagicMock,
+        mock_test: MagicMock,
+        mock_import: MagicMock,
+        mock_scope: MagicMock,
+        mock_lockfile: MagicMock,
+        mock_core: MagicMock,
+        mock_review: MagicMock,
     ) -> None:
-        empty = {"verified": [], "unverified": [], "suspicious": [], "action_items": []}
+        empty: dict[str, Any] = {"verified": [], "unverified": [], "suspicious": [], "action_items": []}
         mock_lint.return_value = empty
         mock_type.return_value = empty
         mock_build.return_value = empty

@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from trust_me.artifacts import persist_run_artifacts
 
@@ -11,7 +12,7 @@ class ArtifactPersistenceTests(unittest.TestCase):
     def test_persist_run_artifacts_writes_expected_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            report = {
+            report: dict[str, Any] = {
                 "root": str(root),
                 "diff_range": None,
                 "patch_path": None,
@@ -37,6 +38,7 @@ class ArtifactPersistenceTests(unittest.TestCase):
                 report,
                 diff_range=None,
                 patch_path=None,
+                scope="all",
                 with_review=False,
                 argv=["python3", "-m", "trust_me.cli", "run"],
                 timestamp=datetime(2026, 4, 22, 17, 30, 0),
@@ -54,6 +56,8 @@ class ArtifactPersistenceTests(unittest.TestCase):
             self.assertEqual({path.name for path in run_dir.iterdir()}, expected_files)
 
             summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["requested_scope"], "all")
+            self.assertEqual(summary["effective_scope"], "all")
             self.assertEqual(summary["detector_count"], 1)
             self.assertEqual(summary["verified_count"], 1)
 
@@ -64,10 +68,14 @@ class ArtifactPersistenceTests(unittest.TestCase):
             commands = json.loads((run_dir / "commands.json").read_text(encoding="utf-8"))
             self.assertEqual(commands["argv"], ["python3", "-m", "trust_me.cli", "run"])
 
+            report_json = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+            self.assertIn("timing", report_json)
+            self.assertEqual(report_json["timing"]["detectors"][0]["detector"], "test_check")
+
     def test_persist_run_artifacts_avoids_timestamp_directory_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            report = {
+            report: dict[str, Any] = {
                 "root": str(root),
                 "diff_range": None,
                 "patch_path": None,
@@ -84,6 +92,7 @@ class ArtifactPersistenceTests(unittest.TestCase):
                 report,
                 diff_range=None,
                 patch_path=None,
+                scope="all",
                 with_review=False,
                 argv=["python3", "-m", "trust_me.cli", "run"],
                 timestamp=timestamp,
@@ -93,6 +102,7 @@ class ArtifactPersistenceTests(unittest.TestCase):
                 report,
                 diff_range=None,
                 patch_path=None,
+                scope="all",
                 with_review=False,
                 argv=["python3", "-m", "trust_me.cli", "run"],
                 timestamp=timestamp,

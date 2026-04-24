@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 from trust_me.utils.git import read_diff_for_range, read_working_tree_diff, read_working_tree_status, repo_root
 
@@ -85,3 +86,18 @@ def parse_diff_scope(diff_text: str) -> dict:
         "binary_files": binary_files,
         "file_types": dict(file_types),
     }
+
+
+def load_changed_files(
+    root: Path,
+    patch_path: str | None,
+    diff_range: str | None,
+) -> tuple[list[str] | None, str | None, str, list[str], dict[str, Any] | None]:
+    diff_text, source, error, notes = load_patch_text(root, patch_path, diff_range)
+    if error:
+        return None, source, error, notes, None
+    if diff_text is None:
+        return None, source, "missing_diff_text", notes, None
+
+    parsed = parse_diff_scope(diff_text)
+    return list(parsed["changed_files"]), source, "", notes, parsed

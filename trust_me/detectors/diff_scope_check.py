@@ -5,7 +5,14 @@ from pathlib import Path
 from trust_me.utils.diff import load_patch_text, parse_diff_scope
 
 
-def detect_diff_scope(root: Path, diff_range: str | None = None, patch_path: str | None = None) -> dict:
+def detect_diff_scope(
+    root: Path,
+    diff_range: str | None = None,
+    patch_path: str | None = None,
+    scope: str = "all",
+    changed_files: list[str] | None = None,
+) -> dict:
+    _ = scope, changed_files
     diff_text, source, error, notes = load_patch_text(root, patch_path, diff_range)
     if error:
         return {

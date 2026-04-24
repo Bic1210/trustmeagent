@@ -12,13 +12,16 @@ from trust_me.utils.diff import load_patch_text
 from trust_me.utils.paths import make_run_dir
 
 
-def _summary(report: dict[str, Any], with_review: bool) -> dict[str, Any]:
+def _summary(report: dict[str, Any], with_review: bool, scope: str) -> dict[str, Any]:
     detectors = report.get("detectors", [])
     return {
         "root": report.get("root"),
         "diff_range": report.get("diff_range"),
         "patch_path": report.get("patch_path"),
+        "requested_scope": scope,
+        "effective_scope": report.get("effective_scope", scope),
         "with_review": with_review,
+        "duration_seconds": report.get("duration_seconds"),
         "detector_count": len(detectors),
         "verified_count": len(report.get("verified", [])),
         "unverified_count": len(report.get("unverified", [])),
@@ -43,13 +46,14 @@ def persist_run_artifacts(
     *,
     diff_range: str | None,
     patch_path: str | None,
+    scope: str,
     with_review: bool,
     argv: list[str] | None = None,
     timestamp: datetime | None = None,
 ) -> Path:
     run_dir = make_run_dir(root, timestamp=timestamp)
 
-    summary = _summary(report, with_review=with_review)
+    summary = _summary(report, with_review=with_review, scope=scope)
     _write_json(run_dir / "summary.json", summary)
     (run_dir / "report.json").write_text(render_json(report), encoding="utf-8")
     _write_findings_jsonl(run_dir / "findings.jsonl", report)
@@ -60,6 +64,7 @@ def persist_run_artifacts(
         "root": str(root),
         "diff_range": diff_range,
         "patch_path": patch_path,
+        "scope": scope,
         "with_review": with_review,
     }
     _write_json(run_dir / "commands.json", commands)

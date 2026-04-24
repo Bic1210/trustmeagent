@@ -7,6 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from trust_me.utils.paths import iter_files
 from trust_me.utils.subprocess import run_command
 from trust_me.utils.tool_env import go_tool_env
 
@@ -25,6 +26,37 @@ GO_TEST_SUFFIX = "_test.go"
 RUST_EXTENSIONS = {".rs"}
 
 
+def _changed_file_set(changed_files: list[str] | None) -> set[str]:
+    return {Path(path).as_posix() for path in changed_files or []}
+
+
+def _filter_changed_files(root: Path, files: list[Path], changed_files: list[str] | None) -> list[Path]:
+    changed_set = _changed_file_set(changed_files)
+    return [path for path in files if path.relative_to(root).as_posix() in changed_set]
+
+
+def _is_python_test_path(path: str) -> bool:
+    pure = Path(path)
+    return "tests" in pure.parts and pure.suffix == ".py" and pure.name.startswith("test")
+
+
+def _is_javascript_test_path(path: str) -> bool:
+    pure = Path(path)
+    return pure.name.endswith(JS_TEST_SUFFIXES) or ("tests" in pure.parts and pure.suffix in {".js", ".jsx", ".ts", ".tsx"})
+
+
+def _is_go_test_path(path: str) -> bool:
+    return path.endswith(GO_TEST_SUFFIX)
+
+
+def _is_supported_changed_file(path: str) -> bool:
+    return Path(path).suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs"}
+
+
+def _python_test_modules(root: Path, test_files: list[Path]) -> list[str]:
+    return [".".join(path.relative_to(root).with_suffix("").parts) for path in test_files]
+
+
 def _python_test_files(root: Path) -> list[Path]:
     tests_dir = root / "tests"
     if not tests_dir.exists():
@@ -32,16 +64,14 @@ def _python_test_files(root: Path) -> list[Path]:
 
     return sorted(
         path
-        for path in tests_dir.rglob("test*.py")
-        if not any(part in IGNORED_PARTS for part in path.parts)
+        for path in iter_files(tests_dir, ignored_parts=IGNORED_PARTS, suffixes={".py"})
+        if path.name.startswith("test")
     )
 
 
 def _javascript_test_files(root: Path) -> list[Path]:
     test_files: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file() or any(part in IGNORED_PARTS for part in path.parts):
-            continue
+    for path in iter_files(root, ignored_parts=IGNORED_PARTS, suffixes={".js", ".jsx", ".ts", ".tsx"}):
         normalized_name = path.name
         if normalized_name.endswith(JS_TEST_SUFFIXES):
             test_files.append(path)
@@ -54,19 +84,15 @@ def _javascript_test_files(root: Path) -> list[Path]:
 def _go_test_files(root: Path) -> list[Path]:
     return sorted(
         path
-        for path in root.rglob(f"*{GO_TEST_SUFFIX}")
-        if path.is_file() and not any(part in IGNORED_PARTS for part in path.parts)
+        for path in iter_files(root, ignored_parts=IGNORED_PARTS, suffixes={".go"})
+        if path.name.endswith(GO_TEST_SUFFIX)
     )
 
 
 def _rust_source_files(root: Path) -> list[Path]:
     if not (root / "Cargo.toml").exists():
         return []
-    return sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file() and path.suffix in RUST_EXTENSIONS and not any(part in IGNORED_PARTS for part in path.parts)
-    )
+    return sorted(iter_files(root, ignored_parts=IGNORED_PARTS, suffixes=RUST_EXTENSIONS))
 
 
 def _local_or_global_tool(root: Path, tool: str) -> str | None:
@@ -102,25 +128,34 @@ def _available_package_manager(root: Path) -> str | None:
     return None
 
 
-def _build_python_test_command(root: Path) -> tuple[str, list[str]] | None:
+def _build_python_test_command(root: Path, test_files: list[Path] | None = None) -> tuple[str, list[str]] | None:
     tests_dir = root / "tests"
     if importlib.util.find_spec("pytest") is not None:
-        return "pytest", [sys.executable, "-m", "pytest", "-q"]
+        command = [sys.executable, "-m", "pytest", "-q"]
+        if test_files:
+            command.extend(str(path) for path in test_files)
+        return "pytest", command
     if shutil.which("pytest") is not None:
-        return "pytest", ["pytest", "-q"]
+        command = ["pytest", "-q"]
+        if test_files:
+            command.extend(str(path) for path in test_files)
+        return "pytest", command
     if tests_dir.exists():
-        return "unittest", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
+        if test_files:
+            return "unittest", [sys.executable, "-m", "unittest", "-q", "-b", *_python_test_modules(root, test_files)]
+        return "unittest", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-q", "-b"]
     return None
 
 
-def _build_javascript_test_command(root: Path) -> tuple[str, list[str]] | None:
+def _build_javascript_test_command(root: Path, test_files: list[Path] | None = None) -> tuple[str, list[str]] | None:
+    targets = [str(path) for path in test_files] if test_files else []
     vitest = _local_or_global_tool(root, "vitest")
     if vitest is not None:
-        return "vitest", [vitest, "run"]
+        return "vitest", [vitest, "run", *targets]
 
     jest = _local_or_global_tool(root, "jest")
     if jest is not None:
-        return "jest", [jest, "--runInBand"]
+        return "jest", [jest, "--runInBand", *targets]
 
     if _package_has_script(root, "test"):
         package_manager = _available_package_manager(root)
@@ -212,7 +247,7 @@ def _run_check(
 
     runner, command = configured
     env = go_tool_env() if runner == "go test" else None
-    code, stdout, stderr = run_command(command, cwd=root, timeout=180.0, env=env)
+    code, stdout, stderr = run_command(command, cwd=root, timeout=180.0, env=env, max_output_chars=4000)
     combined_output = "\n".join(part for part in (stdout, stderr) if part)
     test_count = _extract_test_count(combined_output)
     evidence = {
@@ -261,11 +296,22 @@ def _run_check(
     }
 
 
-def detect_test_status(root: Path, diff_range: str | None = None, patch_path: str | None = None) -> dict:
+def detect_test_status(
+    root: Path,
+    diff_range: str | None = None,
+    patch_path: str | None = None,
+    scope: str = "all",
+    changed_files: list[str] | None = None,
+) -> dict:
     python_test_files = _python_test_files(root)
     javascript_test_files = _javascript_test_files(root)
     go_test_files = _go_test_files(root)
     rust_source_files = _rust_source_files(root)
+    changed_set = _changed_file_set(changed_files)
+    changed_python_tests = _filter_changed_files(root, python_test_files, changed_files) if scope == "changed" else python_test_files
+    changed_javascript_tests = _filter_changed_files(root, javascript_test_files, changed_files) if scope == "changed" else javascript_test_files
+    changed_go_tests = _filter_changed_files(root, go_test_files, changed_files) if scope == "changed" else go_test_files
+    changed_rust_sources = _filter_changed_files(root, rust_source_files, changed_files) if scope == "changed" else rust_source_files
 
     if not python_test_files and not javascript_test_files and not go_test_files and not rust_source_files:
         return {
@@ -285,12 +331,34 @@ def detect_test_status(root: Path, diff_range: str | None = None, patch_path: st
     suspicious: list[str] = []
     action_items: list[str] = []
 
-    if python_test_files:
+    if scope == "changed" and not any(_is_supported_changed_file(path) for path in changed_set):
+        return {
+            "detector": "test_check",
+            "status": "skipped",
+            "evidence": {
+                "scope": scope,
+                "test_file_count": 0,
+                "language_test_file_counts": {
+                    "python": 0,
+                    "javascript_or_typescript": 0,
+                    "go": 0,
+                    "rust": 0,
+                },
+                "checks": [],
+                "reason": "no_changed_supported_test_files",
+            },
+            "verified": ["no changed supported test files detected; test execution skipped in changed scope"],
+            "unverified": [],
+            "suspicious": [],
+            "action_items": [],
+        }
+
+    if changed_python_tests:
         python_check = _run_check(
             root=root,
             language_label="Python",
-            test_file_count=len(python_test_files),
-            configured=_build_python_test_command(root),
+            test_file_count=len(changed_python_tests),
+            configured=_build_python_test_command(root, changed_python_tests if scope == "changed" else None),
             not_configured_reason="no supported Python test runner found; Python test status unavailable",
             install_hint="install pytest or expose a runnable Python test command",
         )
@@ -300,13 +368,18 @@ def detect_test_status(root: Path, diff_range: str | None = None, patch_path: st
         unverified.extend(python_check["unverified"])
         suspicious.extend(python_check["suspicious"])
         action_items.extend(python_check["action_items"])
+    elif scope == "changed" and any(path.endswith(".py") and not _is_python_test_path(path) for path in changed_set):
+        checks.append({"language": "python", "test_file_count": 0, "scope": scope, "reason": "no_changed_tests"})
+        statuses.append("partial")
+        unverified.append("no changed Python test files detected; Python test execution skipped in changed scope")
+        action_items.append("run targeted or full Python tests before trusting changed-scope Python results")
 
-    if javascript_test_files:
+    if changed_javascript_tests:
         javascript_check = _run_check(
             root=root,
             language_label="JavaScript/TypeScript",
-            test_file_count=len(javascript_test_files),
-            configured=_build_javascript_test_command(root),
+            test_file_count=len(changed_javascript_tests),
+            configured=_build_javascript_test_command(root, changed_javascript_tests if scope == "changed" else None),
             not_configured_reason="no vitest, jest, or package test script found; JavaScript/TypeScript test status unavailable",
             install_hint="install vitest or jest, or expose a runnable package test script",
         )
@@ -316,12 +389,17 @@ def detect_test_status(root: Path, diff_range: str | None = None, patch_path: st
         unverified.extend(javascript_check["unverified"])
         suspicious.extend(javascript_check["suspicious"])
         action_items.extend(javascript_check["action_items"])
+    elif scope == "changed" and any(_is_javascript_test_path(path) or Path(path).suffix in {".js", ".jsx", ".ts", ".tsx"} for path in changed_set):
+        checks.append({"language": "javascript/typescript", "test_file_count": 0, "scope": scope, "reason": "no_changed_tests"})
+        statuses.append("partial")
+        unverified.append("no changed JavaScript/TypeScript test files detected; test execution skipped in changed scope")
+        action_items.append("run targeted or full JavaScript/TypeScript tests before trusting changed-scope results")
 
-    if go_test_files:
+    if changed_go_tests:
         go_check = _run_check(
             root=root,
             language_label="Go",
-            test_file_count=len(go_test_files),
+            test_file_count=len(changed_go_tests),
             configured=_build_go_test_command(root),
             not_configured_reason="go is not installed; Go test status unavailable",
             install_hint="install go or configure a project-specific Go test command",
@@ -332,12 +410,17 @@ def detect_test_status(root: Path, diff_range: str | None = None, patch_path: st
         unverified.extend(go_check["unverified"])
         suspicious.extend(go_check["suspicious"])
         action_items.extend(go_check["action_items"])
+    elif scope == "changed" and any(path.endswith(".go") and not _is_go_test_path(path) for path in changed_set):
+        checks.append({"language": "go", "test_file_count": 0, "scope": scope, "reason": "no_changed_tests"})
+        statuses.append("partial")
+        unverified.append("no changed Go test files detected; Go test execution skipped in changed scope")
+        action_items.append("run targeted or full Go tests before trusting changed-scope results")
 
-    if rust_source_files:
+    if changed_rust_sources:
         rust_check = _run_check(
             root=root,
             language_label="Rust",
-            test_file_count=len(rust_source_files),
+            test_file_count=len(changed_rust_sources),
             configured=_build_rust_test_command(root),
             not_configured_reason="cargo is not installed; Rust test status unavailable",
             install_hint="install cargo or configure a project-specific Rust test command",
@@ -348,16 +431,22 @@ def detect_test_status(root: Path, diff_range: str | None = None, patch_path: st
         unverified.extend(rust_check["unverified"])
         suspicious.extend(rust_check["suspicious"])
         action_items.extend(rust_check["action_items"])
+    elif scope == "changed" and any(path.endswith(".rs") for path in changed_set):
+        checks.append({"language": "rust", "test_file_count": 0, "scope": scope, "reason": "no_changed_tests"})
+        statuses.append("partial")
+        unverified.append("no changed Rust test files detected; Rust test execution skipped in changed scope")
+        action_items.append("run targeted or full Rust tests before trusting changed-scope results")
 
     return {
         "detector": "test_check",
         "status": _overall_status(statuses),
         "evidence": {
+            "scope": scope,
             "language_test_file_counts": {
-                "python": len(python_test_files),
-                "javascript_or_typescript": len(javascript_test_files),
-                "go": len(go_test_files),
-                "rust": len(rust_source_files),
+                "python": len(changed_python_tests),
+                "javascript_or_typescript": len(changed_javascript_tests),
+                "go": len(changed_go_tests),
+                "rust": len(changed_rust_sources),
             },
             "checks": checks,
         },
