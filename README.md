@@ -1,8 +1,34 @@
-# trustmeagent
+# trust-me
 
 Not another AI code reviewer.
 
 `trust me` is a patch-confidence harness. It does not try to prove AI-written code is correct. It shows what was actually verified, what remains unverified, what looks risky, and what a human should inspect before trusting the patch.
+
+## Quickstart
+
+Install in editable mode:
+
+```bash
+python3 -m pip install -e .
+```
+
+Install the optional developer tools used by the lint and type detectors:
+
+```bash
+python3 -m pip install -e .[dev]
+```
+
+Run the CLI against the current working tree:
+
+```bash
+python3 -m trust_me.cli run --root .
+```
+
+Run the test suite:
+
+```bash
+python3 -m unittest discover -s tests -q -b
+```
 
 ## Product Snapshot
 
@@ -18,12 +44,6 @@ Instead of another "LGTM-style" summary, you get a decision surface:
 The generated HTML report is meant to feel like a product artifact, not a debug dump. It leads with confidence posture, review queue, detector coverage, and the exact follow-up items a reviewer should triage.
 
 ## Demo Flow
-
-Run against the current working tree:
-
-```bash
-python3 -m trust_me.cli run --root .
-```
 
 Run against a patch and ask Claude for a tester-style review summary:
 
@@ -99,3 +119,15 @@ Implemented today:
 
 `trust me` does not say "looks good".
 It shows the evidence, the missing evidence, and the remaining blast radius.
+
+## Project Status
+
+This repository is an early `v0.1` prototype.
+
+Today it is strongest as:
+
+- a local CLI for inspecting a working tree, diff range, or patch file
+- a static artifact generator for human review
+- a deterministic harness that makes uncertainty explicit
+
+It should not be described as a full code-review replacement. The useful claim is narrower: it helps a human reviewer see what was actually checked before trusting an AI-generated patch.
